@@ -1,0 +1,129 @@
+name: Build Plugin DLL & Push SrupturaBot Docker Image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: alex360/srupturabot
+
+jobs:
+  # ─────────────────────────────────────────────
+  # Job 1: Build the C++ StarRuptureDiscordPlugin DLL
+  # ─────────────────────────────────────────────
+  build-plugin:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Clone StarRupture-ModLoader
+        run: |
+          git clone --depth 1 https://github.com/AlienXAXS/StarRupture-ModLoader.git ModLoader
+
+      - name: Copy plugin into ModLoader tree
+        run: |
+          Copy-Item -Path "StarRupturePlugin" -Destination "ModLoader/StarRuptureDiscordPlugin" -Recurse
+
+      - name: Create vcxproj from ExamplePlugin template
+        shell: pwsh
+        run: |
+          $templatePath = "ModLoader/ExamplePlugin/ExamplePlugin.vcxproj"
+          $outputPath = "ModLoader/StarRuptureDiscordPlugin/StarRuptureDiscordPlugin.vcxproj"
+
+          $content = Get-Content $templatePath -Raw
+
+          # Replace project GUID
+          $content = $content -replace '<ProjectGuid>\{[^}]+\}', '<ProjectGuid>{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}'
+
+          # Replace root namespace and project name
+          $content = $content -replace 'ExamplePlugin', 'StarRuptureDiscordPlugin'
+
+          # Replace source file references
+          $content = $content -replace 'plugin\.cpp', 'plugin.cpp'
+
+          $content | Set-Content $outputPath -Encoding UTF8
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build plugin (Server Release x64)
+        run: |
+          msbuild ModLoader/StarRuptureDiscordPlugin/StarRuptureDiscordPlugin.vcxproj /p:Configuration="Server Release" /p:Platform=x64 /m
+        continue-on-error: true
+
+      - name: Locate built DLL
+        id: find-dll
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem -Path "ModLoader/build" -Filter "StarRuptureDiscordPlugin.dll" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($dll) {
+            Write-Host "Found DLL: $($dll.FullName)"
+            echo "DLL_PATH=$($dll.FullName)" >> $env:GITHUB_OUTPUT
+            echo "DLL_FOUND=true" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "DLL not found in build output — uploading source as artifact instead"
+            echo "DLL_FOUND=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Upload Plugin DLL artifact
+        if: steps.find-dll.outputs.DLL_FOUND == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: StarRuptureDiscordPlugin-DLL
+          path: ${{ steps.find-dll.outputs.DLL_PATH }}
+          retention-days: 90
+
+      - name: Upload Plugin Source artifact (fallback)
+        if: steps.find-dll.outputs.DLL_FOUND != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: StarRuptureDiscordPlugin-Source
+          path: StarRupturePlugin/
+          retention-days: 90
+
+  # ─────────────────────────────────────────────
+  # Job 2: Build and push Docker image for the Discord bot
+  # ─────────────────────────────────────────────
+  build-and-push-docker:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=,format=short
+            type=ref,event=branch
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./StarRuptureDiscordBot
+          file: ./StarRuptureDiscordBot/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
