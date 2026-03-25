@@ -98,8 +98,6 @@ The plugin writes to `Plugins/data/rupture_state.json`:
 }
 ```
 
-## License
-
 MIT
 
 ## Credits
