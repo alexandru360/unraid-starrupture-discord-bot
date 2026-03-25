@@ -6,7 +6,7 @@ COPY StarRuptureDiscordBot.csproj ./
 RUN dotnet restore
 
 COPY . .
-RUN dotnet publish -c Release -o /app --no-restore
+RUN dotnet publish StarRuptureDiscordBot.csproj -c Release -o /app --no-restore
 
 # Stage 2: Runtime
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
